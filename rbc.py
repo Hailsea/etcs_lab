@@ -55,7 +55,7 @@ def get_eoa(train_position):
     return eoa
 
 # ============================================================
-# FONCTIONS HMAC
+# HMAC
 # ============================================================
 
 def generate_session_key():
@@ -99,6 +99,7 @@ def handle_message(sock, data, addr):
             "t_cycloc": 6
         }
         print(f"[RBC] MSG 155 reçu — Train {train_id}")
+        # Returns a Message 32 : RSA public key 
         rep = {"type": "32", "rbc_id": "RBC_01", "version": "3.6.0",
                "public_key": public_key_pem}
         sock.sendto(json.dumps(rep).encode(), addr)
@@ -125,6 +126,8 @@ def handle_message(sock, data, addr):
         sock.sendto(json.dumps(ack).encode(), addr)
         print(f"[RBC] MSG 8 envoyé — ACK Train Data")
         t_cycloc = session["t_cycloc"]
+
+        # Returns a Message 24 : with train_id and t_cycloc
         gm = {"type": "24", "train_id": train_id, "t_cycloc": t_cycloc}
         payload = json.dumps(gm, separators=(',', ':'))
         gm["hmac"] = compute_hmac(session["key"], payload)

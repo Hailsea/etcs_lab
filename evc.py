@@ -23,6 +23,13 @@ position = 0
 speed = 100
 eoa = 99999
 
+def session_key_verify(msg):
+    return session_key==msg["session_key"]
+
+# ============================================================
+# HMAC
+# ============================================================
+
 def compute_hmac(key, msg):
     return hmac.new(key, msg.encode(), hashlib.sha256).hexdigest()
 
@@ -60,15 +67,15 @@ def listen_attacks():
             if msg.get("type") == "3" and msg.get("priority") == "high":
                 eoa = msg["eoa"]
                 speed = msg.get("v_max", 0)
-                print(f"[EVC] ⚠️ FAILLE — Message haute priorité accepté sans vérification HMAC !")
-                print(f"[EVC] ⚠️ EOA forcée à {eoa}m | Vitesse forcée à {speed}km/h")
+                print(f"[EVC] Message haute priorité accepté sans vérification HMAC !")
+                print(f"[EVC] EOA forcée à {eoa}m | Vitesse forcée à {speed}km/h")
 
             # ATTAQUE 4 — fausse balise
-            elif msg.get("type") == "BALISE":
-                fake_pos = msg["position"]
-                print(f"[EVC] ⚠️ FAILLE — Fausse balise reçue — recalage position à {fake_pos}m")
-                print(f"[EVC] ⚠️ Position était {position}m — maintenant recalée à {fake_pos}m")
-                position = fake_pos
+            # elif msg.get("type") == "BALISE":
+            #     fake_pos = msg["position"]
+            #     print(f"[EVC] ⚠️ FAILLE — Fausse balise reçue — recalage position à {fake_pos}m")
+            #     print(f"[EVC] ⚠️ Position était {position}m — maintenant recalée à {fake_pos}m")
+            #     position = fake_pos
 
         except Exception as e:
             pass
@@ -86,34 +93,41 @@ print(f"[EVC] Démarrage — bindé sur {BIND_IP}:{BIND_PORT}")
 # PHASE 1 : Handshake EuroRadio avec RSA
 # ============================================================
 
+
+#Send Message 155 : start
 msg155 = {"type": "155", "train_id": TRAIN_ID, "t_train": int(time.time())}
 sock.sendto(json.dumps(msg155).encode(), (RBC_HOST, RBC_PORT))
 print("[EVC] MSG 155 envoyé — Initiation session")
 
+#Receive Message 32 : RSA public key
 data, _ = sock.recvfrom(4096)
 msg32 = json.loads(data.decode())
 assert msg32["type"] == "32", "Attendu MSG 32"
 public_key_pem = msg32["public_key"]
 print(f"[EVC] MSG 32 reçu — Clé publique RSA du RBC reçue")
 
+#Send Message 159 : Clé de session (chiffré)
 session_key = os.urandom(32)
 encrypted_session_key = encrypt_session_key(session_key, public_key_pem)
 print(f"[EVC] Clé de session générée et chiffrée avec RSA")
-
 msg159 = {"type": "159", "train_id": TRAIN_ID,
           "encrypted_session_key": encrypted_session_key}
 sock.sendto(json.dumps(msg159).encode(), (RBC_HOST, RBC_PORT))
 print("[EVC] MSG 159 envoyé — Clé de session chiffrée transmise au RBC")
 
+#Send Message 129 : Train data
 msg129 = {"type": "129", "train_id": TRAIN_ID, "v_maxtrain": 160, "train_length": 200}
 sock.sendto(json.dumps(msg129).encode(), (RBC_HOST, RBC_PORT))
 print("[EVC] MSG 129 envoyé — Train Data")
 
+#Receive Message 8 : ACK train data
 data, _ = sock.recvfrom(4096)
 msg8 = json.loads(data.decode())
 assert msg8["type"] == "8", "Attendu MSG 8"
+session_key_verify(msg8)
 print("[EVC] MSG 8 reçu — ACK Train Data")
 
+#Receive Message 24 : Definition tcycloc
 data, _ = sock.recvfrom(4096)
 msg24 = json.loads(data.decode())
 assert msg24["type"] == "24", "Attendu MSG 24"
@@ -123,14 +137,17 @@ assert verify_hmac(session_key, payload, received_mac), "HMAC MSG 24 invalide"
 t_cycloc = msg24["t_cycloc"]
 print(f"[EVC] MSG 24 reçu — T_CYCLOC={t_cycloc}s")
 
+#Send Message 146 : ACK
 msg146 = {"type": "146", "train_id": TRAIN_ID, "t_train_ack": int(time.time())}
 sock.sendto(json.dumps(msg146).encode(), (RBC_HOST, RBC_PORT))
 print("[EVC] MSG 146 envoyé — ACK General Message")
 
+#Send Message 132 : MA Request
 msg132 = {"type": "132", "train_id": TRAIN_ID}
 sock.sendto(json.dumps(msg132).encode(), (RBC_HOST, RBC_PORT))
 print("[EVC] MSG 132 envoyé — MA Request")
 
+#Receive Message 3
 data, _ = sock.recvfrom(4096)
 ma_init = json.loads(data.decode())
 assert ma_init["type"] == "3", "Attendu MSG 3"
@@ -154,10 +171,10 @@ while True:
     position += int(speed * t_cycloc / 3.6)
 
     # Recalage balise interne
-    for balise_pos, balise_val in BALISES.items():
-        if abs(position - balise_pos) < 100:
-            print(f"[EVC] Balise détectée à {balise_pos}m — recalage position")
-            position = balise_val
+    # for balise_pos, balise_val in BALISES.items():
+    #     if abs(position - balise_pos) < 100:
+    #         print(f"[EVC] Balise détectée à {balise_pos}m — recalage position")
+    #         position = balise_val
 
     # Verification EOA
     if position >= eoa:
@@ -178,7 +195,7 @@ while True:
         msg = json.loads(data.decode())
 
         # Renouvellement cle
-        if msg.get("type") == "KEY_RENEWAL":
+        if msg.get("type") == "KEY_RENEWAL": #check doc pour verif le type
             session_key = bytes.fromhex(msg["session_key"])
             print("[EVC] 🔑 Clé de session renouvelée")
             data, _ = sock.recvfrom(4096)
@@ -192,7 +209,7 @@ while True:
                 eoa = msg["eoa"]
                 print(f"[EVC] MA reçue — EOA: {eoa}m | V_max: {msg['v_max']}km/h")
             else:
-                print("[EVC] ⚠️ MA rejetée — HMAC invalide ! (tentative de spoofing détectée)")
+                print("[EVC] ⚠️ MA rejetée — HMAC invalide ! (Intégrité du message compromise)")
 
     except socket.timeout:
         print("[EVC] Pas de message reçu (timeout)")
